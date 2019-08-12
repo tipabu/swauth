@@ -1,0 +1,20 @@
+- job:
+    name: swauth-tox-old-swift
+    parent: openstack-tox-py27
+    description: |
+      Run swauth unit tests with our minimum-supported version of swift, 2.2.0.
+    vars:
+      tox_envlist: py27-min
+
+- project:
+    templates:
+      - openstack-python-jobs
+      - openstack-python3-train-jobs
+      - check-requirements
+      - publish-to-pypi
+    check:
+      jobs:
+        - swauth-tox-old-swift
+    gate:
+      jobs:
+        - swauth-tox-old-swift

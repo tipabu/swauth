@@ -17,18 +17,18 @@ import base64
 from hashlib import sha1
 from hashlib import sha512
 import hmac
-from httplib import HTTPConnection
-from httplib import HTTPSConnection
 import json
 import six
+from six.moves.http_client import HTTPConnection
+from six.moves.http_client import HTTPSConnection
+from six.moves.urllib.parse import quote
+from six.moves.urllib.parse import unquote
 from six.moves.urllib.parse import urlparse
 import swift
 from time import gmtime
 from time import strftime
 from time import time
 from traceback import format_exc
-from urllib import quote
-from urllib import unquote
 from uuid import uuid4
 
 from eventlet.timeout import Timeout
@@ -235,12 +235,12 @@ class Swauth(object):
                 return self.handle(env, start_response)
         s3 = env.get('swift3.auth_details')
         if s3 and not self.s3_support:
-            msg = 'S3 support is disabled in swauth.'
+            msg = b'S3 support is disabled in swauth.'
             return HTTPBadRequest(body=msg)(env, start_response)
         token = env.get('HTTP_X_AUTH_TOKEN', env.get('HTTP_X_STORAGE_TOKEN'))
         if token and len(token) > swauth.authtypes.MAX_TOKEN_LENGTH:
-            return HTTPBadRequest(body='Token exceeds maximum length.')(env,
-                                                                start_response)
+            return HTTPBadRequest(body=b'Token exceeds maximum length.')(
+                env, start_response)
         if s3 or (token and token.startswith(self.reseller_prefix)):
             # Note: Empty reseller_prefix will match all tokens.
             groups = self.get_groups(env, token)
@@ -299,7 +299,9 @@ class Swauth(object):
         Tokens are stored in auth account but object names are visible in Swift
         logs. Object names are hashed from token.
         """
-        enc_key = "%s:%s:%s" % (HASH_PATH_PREFIX, token, HASH_PATH_SUFFIX)
+        if not isinstance(token, bytes):
+            token = token.encode('ascii')
+        enc_key = b"%s:%s:%s" % (HASH_PATH_PREFIX, token, HASH_PATH_SUFFIX)
         return sha512(enc_key).hexdigest()
 
     def get_groups(self, env, token):
@@ -365,6 +367,8 @@ class Swauth(object):
             detail = json.loads(resp.body)
             if detail:
                 creds = detail.get('auth')
+                if six.PY2:
+                    creds = creds.encode('utf8')
                 try:
                     auth_encoder, creds_dict = \
                         swauth.authtypes.validate_creds(creds)
@@ -382,6 +386,8 @@ class Swauth(object):
 
             valid_signature = base64.encodestring(hmac.new(
                 password, msg, sha1).digest()).strip()
+            if not six.PY2:
+                valid_signature = valid_signature.decode('ascii')
             if signature_from_user != valid_signature:
                 return None
             groups = [g['name'] for g in detail['groups']]
@@ -520,7 +526,7 @@ class Swauth(object):
             print("EXCEPTION IN handle: %s: %s" % (format_exc(), env))
             start_response('500 Server Error',
                            [('Content-Type', 'text/plain')])
-            return ['Internal server error.\n']
+            return [b'Internal server error.\n']
 
     def handle_request(self, req):
         """Entry point for auth requests (ones that match the self.auth_prefix).
@@ -607,7 +613,7 @@ class Swauth(object):
         if resp.status_int // 100 != 2:
             raise Exception('Could not create container: %s %s' %
                             (path, resp.status))
-        for container in xrange(16):
+        for container in range(16):
             path = quote('/v1/%s/.token_%x' % (self.auth_account, container))
             resp = self.make_pre_authed_request(
                 req.environ, 'PUT', path).get_response(self.app)
@@ -651,7 +657,7 @@ class Swauth(object):
                 if container['name'][0] != '.':
                     listing.append({'name': container['name']})
             marker = sublisting[-1]['name'].encode('utf-8')
-        return Response(body=json.dumps({'accounts': listing}),
+        return Response(body=json.dumps({'accounts': listing}).encode('ascii'),
                         content_type=CONTENT_TYPE_JSON)
 
     def handle_get_account(self, req):
@@ -711,7 +717,7 @@ class Swauth(object):
         return Response(content_type=CONTENT_TYPE_JSON,
                         body=json.dumps({'account_id': account_id,
                                          'services': services,
-                                         'users': listing}))
+                                         'users': listing}).encode('ascii'))
 
     def handle_set_services(self, req):
         """Handles the POST v2/<account>/.services call for setting services
@@ -757,7 +763,8 @@ class Swauth(object):
         try:
             new_services = json.loads(req.body)
         except ValueError as err:
-            return HTTPBadRequest(body=str(err))
+            msg = str(err) if six.PY2 else str(err).encode('utf8')
+            return HTTPBadRequest(body=msg)
         # Get the current services information
         path = quote('/v1/%s/%s/.services' % (self.auth_account, account))
         resp = self.make_pre_authed_request(
@@ -768,13 +775,13 @@ class Swauth(object):
             raise Exception('Could not obtain services info: %s %s' %
                             (path, resp.status))
         services = json.loads(resp.body)
-        for new_service, value in new_services.iteritems():
+        for new_service, value in new_services.items():
             if new_service in services:
                 services[new_service].update(value)
             else:
                 services[new_service] = value
         # Save the new services information
-        services = json.dumps(services)
+        services = json.dumps(services).encode('ascii')
         resp = self.make_pre_authed_request(
             req.environ, 'PUT', path, services).get_response(self.app)
         if resp.status_int // 100 != 2:
@@ -916,7 +923,7 @@ class Swauth(object):
             services = json.loads(resp.body)
             # Delete the account on each cluster it is on.
             deleted_any = False
-            for name, url in services['storage'].iteritems():
+            for name, url in services['storage'].items():
                 if name != 'default':
                     parsed = urlparse(url)
                     conn = self.get_conn(parsed)
@@ -1033,10 +1040,11 @@ class Swauth(object):
                     break
                 for obj in sublisting:
                     if obj['name'][0] != '.':
-
+                        user = (obj['name'].encode('utf8') if six.PY2
+                                else obj['name'])
                         # get list of groups for each user
                         user_json = self.get_user_detail(req, account,
-                                                         obj['name'])
+                                                         user)
                         if user_json is None:
                             raise Exception('Could not retrieve user object: '
                                             '%s:%s %s' % (account, user, 404))
@@ -1044,7 +1052,8 @@ class Swauth(object):
                             g['name'] for g in json.loads(user_json)['groups'])
                 marker = sublisting[-1]['name'].encode('utf-8')
             body = json.dumps(
-                {'groups': [{'name': g} for g in sorted(groups)]})
+                {'groups': [{'name': g} for g in sorted(groups)]}
+            ).encode('ascii')
         else:
             # get information for specific user,
             # if user doesn't exist, return HTTPNotFound
@@ -1312,7 +1321,7 @@ class Swauth(object):
                 request=req,
                 content_type=CONTENT_TYPE_JSON,
                 body=json.dumps({'storage': {'default': 'local',
-                                             'local': url}}),
+                                             'local': url}}).encode('ascii'),
                 headers={'x-auth-token': token,
                          'x-storage-token': token,
                          'x-storage-url': url})
@@ -1570,6 +1579,8 @@ class Swauth(object):
         """
         if user_detail:
             creds = user_detail.get('auth')
+            if six.PY2:
+                creds = creds.encode('utf8')
             try:
                 auth_encoder, creds_dict = \
                     swauth.authtypes.validate_creds(creds)

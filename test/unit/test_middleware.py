@@ -18,9 +18,9 @@ from contextlib import contextmanager
 import hashlib
 import json
 import mock
+from six.moves.urllib.parse import quote
 from time import time
 import unittest
-from urllib import quote
 
 from swift.common.swob import Request
 from swift.common.swob import Response
@@ -68,7 +68,7 @@ class FakeApp(object):
         self.calls = 0
         self.status_headers_body_iter = status_headers_body_iter
         if not self.status_headers_body_iter:
-            self.status_headers_body_iter = iter([('404 Not Found', {}, '')])
+            self.status_headers_body_iter = iter([('404 Not Found', {}, b'')])
         self.acl = acl
         self.sync_key = sync_key
 
@@ -83,7 +83,9 @@ class FakeApp(object):
             resp = env['swift.authorize'](self.request)
             if resp:
                 return resp(env, start_response)
-        status, headers, body = self.status_headers_body_iter.next()
+        status, headers, body = next(self.status_headers_body_iter)
+        if not isinstance(body, bytes):
+            body = body.encode('utf8')
         return Response(status=status, headers=headers,
                         body=body)(env, start_response)
 
@@ -94,13 +96,15 @@ class FakeConn(object):
         self.calls = 0
         self.status_headers_body_iter = status_headers_body_iter
         if not self.status_headers_body_iter:
-            self.status_headers_body_iter = iter([('404 Not Found', {}, '')])
+            self.status_headers_body_iter = iter([('404 Not Found', {}, b'')])
 
     def request(self, method, path, headers):
         self.calls += 1
         self.request_path = path
-        self.status, self.headers, self.body = \
-            self.status_headers_body_iter.next()
+        self.status, self.headers, self.body = next(
+            self.status_headers_body_iter)
+        if not isinstance(self.body, bytes):
+            self.body = self.body.encode('utf8')
         self.status, self.reason = self.status.split(' ', 1)
         self.status = int(self.status)
 
@@ -109,7 +113,7 @@ class FakeConn(object):
 
     def read(self):
         body = self.body
-        self.body = ''
+        self.body = b''
         return body
 
 
@@ -132,11 +136,12 @@ class TestAuth(unittest.TestCase):
                     'max_token_life': str(MAX_TOKEN_LIFE),
                     'auth_type': auth_type})(FakeApp())
             self.assertEqual(test_auth.auth_encoder.salt, None)
-            mock_urandom = mock.Mock(return_value="abc")
+            mock_urandom = mock.Mock(return_value=b"abc")
             with mock.patch("os.urandom", mock_urandom):
                 h_key = test_auth.auth_encoder().encode("key")
             self.assertTrue(mock_urandom.called)
-            prefix = auth_type + ":" + "abc".encode('base64').rstrip() + '$'
+            prefix = auth_type + ":" + base64.b64encode(
+                b"abc").rstrip().decode('ascii') + '$'
             self.assertTrue(h_key.startswith(prefix))
 
             # Salt manually set
@@ -341,7 +346,7 @@ class TestAuth(unittest.TestCase):
         local_auth = \
             auth.filter_factory({'super_admin_key': 'supertest',
                                  'reseller_prefix': ''})(FakeApp())
-        local_authorize = lambda req: Response('test')
+        local_authorize = lambda req: Response(body=b'test')
         resp = Request.blank('/v1/account', environ={'swift.authorize':
             local_authorize}).get_response(local_auth)
         self.assertEqual(resp.status_int, 200)
@@ -1103,7 +1108,7 @@ class TestAuth(unittest.TestCase):
             # PUT of .account_id container
             ('201 Created', {}, '')]
         # PUT of .token* containers
-        for x in xrange(16):
+        for x in range(16):
             list_to_iter.append(('201 Created', {}, ''))
         self.test_auth.app = FakeApp(iter(list_to_iter))
         resp = Request.blank('/auth/v2/.prep',
@@ -2474,7 +2479,7 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(resp.body, json.dumps(
             {"groups": [{"name": "act:usr"}, {"name": "act"},
                         {"name": ".admin"}],
-             "auth": "plaintext:key"}))
+             "auth": "plaintext:key"}).encode('ascii'))
         self.assertEqual(self.test_auth.app.calls, 1)
 
     def test_get_user_fail_no_super_admin_key(self):
@@ -2524,7 +2529,8 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(resp.content_type, CONTENT_TYPE_JSON)
         self.assertEqual(resp.body, json.dumps(
             {"groups": [{"name": ".admin"}, {"name": "act"},
-                        {"name": "act:tester"}, {"name": "act:tester3"}]}))
+                        {"name": "act:tester"}, {"name": "act:tester3"}]}
+        ).encode('ascii'))
         self.assertEqual(self.test_auth.app.calls, 4)
 
     def test_get_user_groups_success2(self):
@@ -2563,7 +2569,8 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(resp.content_type, CONTENT_TYPE_JSON)
         self.assertEqual(resp.body, json.dumps(
             {"groups": [{"name": ".admin"}, {"name": "act"},
-                        {"name": "act:tester"}, {"name": "act:tester3"}]}))
+                        {"name": "act:tester"}, {"name": "act:tester3"}]}
+        ).encode('ascii'))
         self.assertEqual(self.test_auth.app.calls, 5)
 
     def test_get_user_fail_invalid_account(self):
@@ -2620,7 +2627,7 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(resp.content_type, CONTENT_TYPE_JSON)
         self.assertEqual(resp.body, json.dumps(
             {"groups": [{"name": "act:usr"}, {"name": "act"}],
-             "auth": "plaintext:key"}))
+             "auth": "plaintext:key"}).encode('ascii'))
         self.assertEqual(self.test_auth.app.calls, 2)
 
     def test_get_user_account_admin_fail_getting_account_admin(self):
@@ -2697,7 +2704,7 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(resp.body, json.dumps(
             {"groups": [{"name": "act:usr"}, {"name": "act"},
                         {"name": ".reseller_admin"}],
-             "auth": "plaintext:key"}))
+             "auth": "plaintext:key"}).encode('ascii'))
         self.assertEqual(self.test_auth.app.calls, 1)
 
     def test_get_user_groups_not_found(self):
@@ -4027,12 +4034,12 @@ class TestAuth(unittest.TestCase):
             'x-auth-token': 'a' * MAX_TOKEN_LENGTH})
         resp = req.get_response(self.test_auth)
         self.assertEqual(resp.status_int, 401)
-        self.assertNotEqual(resp.body, 'Token exceeds maximum length.')
+        self.assertNotEqual(resp.body, b'Token exceeds maximum length.')
         req = self._make_request('/v1/AUTH_account', headers={
             'x-auth-token': 'a' * (MAX_TOKEN_LENGTH + 1)})
         resp = req.get_response(self.test_auth)
         self.assertEqual(resp.status_int, 400)
-        self.assertEqual(resp.body, 'Token exceeds maximum length.')
+        self.assertEqual(resp.body, b'Token exceeds maximum length.')
 
     def test_s3_enabled_when_conditions_are_met(self):
         # auth_type_salt needs to be set
@@ -4091,7 +4098,7 @@ class TestAuth(unittest.TestCase):
         self.test_auth.s3_support = True
         self.test_auth.app = FakeApp(iter([
             ('200 Ok', {},
-             json.dumps({"auth": unicode("plaintext:key)"),
+             json.dumps({"auth": "plaintext:key)",
                          "groups": [{'name': "act:usr"}, {'name': "act"},
                                     {'name': ".admin"}]})),
             ('204 Ok', {'X-Container-Meta-Account-Id': 'AUTH_act'}, '')]))
@@ -4111,7 +4118,7 @@ class TestAuth(unittest.TestCase):
         self.test_auth.s3_support = True
         self.test_auth.app = FakeApp(iter([
             ('200 Ok', {},
-             json.dumps({"auth": unicode("plaintext:key)"),
+             json.dumps({"auth": "plaintext:key)",
                          "groups": [{'name': "act:usr"}, {'name': "act"},
                                     {'name': ".admin"}]})),
             ('204 Ok', {'X-Container-Meta-Account-Id': 'AUTH_act'}, '')]))
@@ -4132,7 +4139,7 @@ class TestAuth(unittest.TestCase):
         self.test_auth.s3_support = True
         key = 'dadada'
         salt = 'zuck'
-        key_hash = hashlib.sha1('%s%s' % (salt, key)).hexdigest()
+        key_hash = hashlib.sha1((salt + key).encode('ascii')).hexdigest()
         auth_stored = "sha1:%s$%s" % (salt, key_hash)
         self.test_auth.app = FakeApp(iter([
             ('200 Ok', {},
@@ -4150,15 +4157,17 @@ class TestAuth(unittest.TestCase):
              'PATH_INFO': '/v1/AUTH_act/c1'}
         token = 'not used'
         mock_hmac_new = mock.MagicMock()
+        mock_hmac_new.return_value.digest.return_value = b'does not matter'
         with mock.patch('hmac.new', mock_hmac_new):
             self.test_auth.get_groups(env, token)
         self.assertTrue(mock_hmac_new.called)
         # Assert that string passed to hmac.new is only the hash
-        self.assertEqual(mock_hmac_new.call_args[0][0], key_hash)
+        self.assertEqual(mock_hmac_new.call_args[0][0],
+                         key_hash.encode('ascii'))
 
     def test_get_concealed_token(self):
-        auth.HASH_PATH_PREFIX = 'start'
-        auth.HASH_PATH_SUFFIX = 'end'
+        auth.HASH_PATH_PREFIX = b'start'
+        auth.HASH_PATH_SUFFIX = b'end'
         token = 'token'
 
         # Check sha512 of "start:token:end"
@@ -4177,7 +4186,7 @@ class TestAuth(unittest.TestCase):
                 'f4259d')
 
         # Check sha512 of "start2:token2:end"
-        auth.HASH_PATH_PREFIX = 'start2'
+        auth.HASH_PATH_PREFIX = b'start2'
         hashed_token = self.test_auth._get_concealed_token(token)
         self.assertEqual(hashed_token,
                 'ad594a69f44dd6e0aad54e360b01f15bd4833ccb4dcd9116d7aba0c25fb95'
@@ -4185,7 +4194,7 @@ class TestAuth(unittest.TestCase):
                 '22bdde')
 
         # Check sha512 of "start2:token2:end2"
-        auth.HASH_PATH_SUFFIX = 'end2'
+        auth.HASH_PATH_SUFFIX = b'end2'
         hashed_token = self.test_auth._get_concealed_token(token)
         self.assertEqual(hashed_token,
                 '446af2473ad6b28319a0fe02719a9d715b9941d12e0709851aedb4f53b890'

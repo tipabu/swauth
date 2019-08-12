@@ -29,8 +29,10 @@ conditions:
   indicates whether the match is True or False.
 """
 
+import base64
 import hashlib
 import os
+import six
 import string
 import sys
 
@@ -117,7 +119,9 @@ class Sha1(object):
         :param key: User's secret key
         :returns: A string representing user credentials
         """
-        enc_key = '%s%s' % (salt, key)
+        enc_key = salt + key
+        if not six.PY2:
+            enc_key = enc_key.encode('utf8')
         enc_val = hashlib.sha1(enc_key).hexdigest()
         return "sha1:%s$%s" % (salt, enc_val)
 
@@ -131,7 +135,9 @@ class Sha1(object):
         :param key: User's secret key
         :returns: A string representing user credentials
         """
-        salt = self.salt or os.urandom(32).encode('base64').rstrip()
+        salt = self.salt or base64.b64encode(os.urandom(32)).rstrip()
+        if not six.PY2 and isinstance(salt, bytes):
+            salt = salt.decode('ascii')
         return self.encode_w_salt(salt, key)
 
     def match(self, key, creds, salt, **kwargs):
@@ -187,6 +193,8 @@ class Sha512(object):
         :returns: A string representing user credentials
         """
         enc_key = '%s%s' % (salt, key)
+        if not six.PY2:
+            enc_key = enc_key.encode('utf8')
         enc_val = hashlib.sha512(enc_key).hexdigest()
         return "sha512:%s$%s" % (salt, enc_val)
 
@@ -200,7 +208,9 @@ class Sha512(object):
         :param key: User's secret key
         :returns: A string representing user credentials
         """
-        salt = self.salt or os.urandom(32).encode('base64').rstrip()
+        salt = self.salt or base64.b64encode(os.urandom(32)).rstrip()
+        if not six.PY2 and isinstance(salt, bytes):
+            salt = salt.decode('ascii')
         return self.encode_w_salt(salt, key)
 
     def match(self, key, creds, salt, **kwargs):
